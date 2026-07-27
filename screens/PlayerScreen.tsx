@@ -129,6 +129,14 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       sub = 'buzzed';
       labelSize = 'clamp(30px,12cqw,54px)';
       disabled = true;
+    } else if (myPlayer?.lockedOut) {
+      // False-started or judged 'wrong' in a reopen-remaining chain — the
+      // server silently ignores a press from this player, so an enabled
+      // "BUZZ" here would be a dead button with no feedback.
+      label = 'OUT';
+      sub = 'locked out this round';
+      labelSize = 'clamp(28px,11cqw,50px)';
+      disabled = true;
     }
   } else if (phase === 'locked') {
     disabled = true;
@@ -193,7 +201,7 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       setReady();
       return;
     }
-    if (phase === 'open' && !hasPressed) handlePress();
+    if (phase === 'open' && !hasPressed && !myPlayer?.lockedOut) handlePress();
   };
 
   const handleButtonPointerDown = () => {

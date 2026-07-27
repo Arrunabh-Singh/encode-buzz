@@ -27,6 +27,7 @@ export interface PublicPlayer {
   score: number;
   connected: boolean;
   ready: boolean;
+  lockedOut: boolean;
 }
 
 export interface RoomState {
