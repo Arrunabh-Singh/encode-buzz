@@ -8,10 +8,12 @@ import { remainingMs } from './time';
 import { Role, RoomState, RoomSettings, Verdict, HostDetail } from './types';
 
 // Used by the lobby to decide name-join vs. pin-login before joining — a
-// plain lookup, not part of the hook's own state.
-export async function checkEntryMode(code: string): Promise<'open' | 'teams' | null> {
-  const { data } = await supabaseBrowser.rpc('get_room_state', { p_code: code });
-  return (data as RoomState | null)?.entry_mode ?? null;
+// plain lookup, not part of the hook's own state. 'error' is distinct from
+// 'not_found' so a network blip isn't reported to the user as a bad room code.
+export async function checkEntryMode(code: string): Promise<'open' | 'teams' | 'not_found' | 'error'> {
+  const { data, error } = await supabaseBrowser.rpc('get_room_state', { p_code: code });
+  if (error) return 'error';
+  return (data as RoomState | null)?.entry_mode ?? 'not_found';
 }
 
 const SESSION_KEY = 'qurious_session';
@@ -46,16 +48,22 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
   const [code, setCode] = useState<string>('');
   const [myName, setMyName] = useState<string>('');
   const [state, setState] = useState<RoomState | null>(null);
+  const [stateLoaded, setStateLoaded] = useState<boolean>(false);
   const [hostDetail, setHostDetail] = useState<HostDetail | null>(null);
   const [error, setError] = useState<string>('');
   const [falseStart, setFalseStart] = useState<boolean>(false);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState<number | null>(null);
   const [connected, setConnected] = useState<boolean>(false);
   const [sessionReplaced, setSessionReplaced] = useState<boolean>(false);
+  // Set when a stored session fails to restore (e.g. the room was cleaned up
+  // or the secret is stale) — lets the lobby retry a fresh join for the same
+  // code instead of silently stranding the user with a dead session.
+  const [staleSessionCode, setStaleSessionCode] = useState<string | null>(null);
 
   const secretRef = useRef<string>('');
   const roleRef = useRef<Role | null>(null);
   const falseStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stateSeqRef = useRef(0);
 
   const showError = useCallback((message: string) => {
     setError(message);
@@ -66,8 +74,12 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
     // room_state itself is locked down (no direct SELECT) so a room code
     // can't be discovered by listing the view — this RPC is scoped to one
     // code at a time, the one the caller already has.
-    const { data } = await supabaseBrowser.rpc('get_room_state', { p_code: c });
+    const seq = ++stateSeqRef.current;
+    const { data, error } = await supabaseBrowser.rpc('get_room_state', { p_code: c });
+    if (seq !== stateSeqRef.current) return; // a newer refresh already landed
+    if (error) return; // transient failure — keep the last known-good state
     setState((data as RoomState | null) ?? null);
+    setStateLoaded(true);
   }, []);
 
   const refreshHostDetail = useCallback(async (c: string, hostSecret: string) => {
@@ -90,7 +102,14 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
         p_secret: session.secret,
       });
       if (data.error) {
-        saveSession(null);
+        // A definitive "no" from the server means the session is actually
+        // dead — clear it and let the lobby retry a fresh join. A network
+        // failure is not a "no": leave the session alone so the next mount
+        // (or a manual retry) can still restore it.
+        if (!data.offline) {
+          saveSession(null);
+          setStaleSessionCode(session.code);
+        }
         return;
       }
       secretRef.current = session.secret;
@@ -127,9 +146,20 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
 
   const nudge = useCallback(() => {
     if (!code) return;
-    void supabaseBrowser.rpc('expire_round_if_due', { p_code: code }).then(() => {
-      void refreshState(code);
-    });
+    // refreshState must run whether expire_round_if_due succeeds or errors —
+    // otherwise a single failed expire call (network blip, Postgres
+    // contention) stops state from ever refreshing again on this client.
+    // supabase-js's rpc() builder is thenable but not a real Promise (no
+    // .catch/.finally), so an async IIFE with try/finally is used instead.
+    void (async () => {
+      try {
+        await supabaseBrowser.rpc('expire_round_if_due', { p_code: code });
+      } catch {
+        // ignored — refreshState below still runs via finally
+      } finally {
+        await refreshState(code);
+      }
+    })();
   }, [code, refreshState]);
 
   // Nobody runs a background timer anymore — any connected client's local
@@ -142,7 +172,12 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
   // visibility-return catch-up below are far harder for the browser to defer.
   useEffect(() => {
     if (!code || !state || state.phase === 'idle' || state.phase === 'ended') return;
-    const t = setInterval(nudge, 1000);
+    // Skip the RPC while backgrounded — the visibilitychange handler below
+    // catches up the instant the tab is foregrounded again, so nothing is
+    // lost, and this cuts baseline load from every idle-but-open tab.
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') nudge();
+    }, 1000);
     return () => clearInterval(t);
   }, [code, state?.phase, nudge]);
 
@@ -267,6 +302,7 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
     setCode('');
     setMyName('');
     setState(null);
+    setStateLoaded(false);
     setHostDetail(null);
   }, [code]);
 
@@ -300,10 +336,12 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
   }, [code, handleSessionReplaced]);
 
   const updateSettings = useCallback(
-    (patch: Partial<RoomSettings>) => {
-      if (code && secretRef.current) void rpc('update_settings', { p_code: code, p_host_secret: secretRef.current, p_patch: patch });
+    async (patch: Partial<RoomSettings>) => {
+      if (!code || !secretRef.current) return;
+      const data = await rpc<{ error?: string }>('update_settings', { p_code: code, p_host_secret: secretRef.current, p_patch: patch });
+      if (data.error) showError(data.error);
     },
-    [code]
+    [code, showError]
   );
 
   const startRound = useCallback(async () => {
@@ -320,6 +358,10 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
       p_client_estimated_server_ms: Math.round(getServerNow()),
       p_rtt_ms: Math.round(getLastRttMs()),
     });
+    if (data.error) {
+      showError('Buzz did not reach the server — try again');
+      return;
+    }
     if (data.event === 'session_replaced') {
       handleSessionReplaced();
       return;
@@ -329,7 +371,7 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
       if (falseStartTimer.current) clearTimeout(falseStartTimer.current);
       falseStartTimer.current = setTimeout(() => setFalseStart(false), 1500);
     }
-  }, [code, handleSessionReplaced]);
+  }, [code, handleSessionReplaced, showError]);
 
   const judge = useCallback(
     async (verdict: Verdict) => {
@@ -361,10 +403,13 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
     myName,
     myPlayer,
     state,
+    stateLoaded,
     hostDetail,
     error,
+    showError,
     falseStart,
     sessionReplaced,
+    staleSessionCode,
     countdownRemainingMs,
     createRoom,
     joinRoom,

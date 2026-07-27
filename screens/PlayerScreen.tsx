@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RoomApi } from '@/lib/useRoom';
 import { msToSeconds } from '@/lib/time';
+import { hasPressedInEpoch } from '@/lib/presses';
 import { Buzzer } from '@/components/Buzzer';
 
 function useBuzzerSound() {
@@ -12,6 +13,13 @@ function useBuzzerSound() {
     if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
     if (audioCtxRef.current.state === 'suspended') void audioCtxRef.current.resume();
     return audioCtxRef.current;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      void audioCtxRef.current?.close();
+      audioCtxRef.current = null;
+    };
   }, []);
 
   const tone = useCallback(
@@ -54,10 +62,13 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
   const wonRef = useRef(false);
   const buzzButtonRef = useRef<HTMLButtonElement>(null);
   const pointerHandledRef = useRef(false);
+  const pointerResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const phase = state?.phase ?? 'idle';
-  const hasPressed = state?.presses.some((p) => p.playerName === myName) ?? false;
+  const hasPressed = state ? hasPressedInEpoch(state.presses, myName, state.lock_epoch) : false;
   const isMyTurn = state?.current_winner === myName;
+  const iPressed = state?.presses.some((p) => p.playerName === myName && !p.falseStart) ?? false;
+  const scoreboard = useMemo(() => (state ? [...state.players].sort((a, b) => b.score - a.score) : []), [state]);
 
   useEffect(() => {
     if (countdownRemainingMs === null) {
@@ -118,6 +129,14 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       sub = 'buzzed';
       labelSize = 'clamp(30px,12cqw,54px)';
       disabled = true;
+    } else if (myPlayer?.lockedOut) {
+      // False-started or judged 'wrong' in a reopen-remaining chain — the
+      // server silently ignores a press from this player, so an enabled
+      // "BUZZ" here would be a dead button with no feedback.
+      label = 'OUT';
+      sub = 'locked out this round';
+      labelSize = 'clamp(28px,11cqw,50px)';
+      disabled = true;
     }
   } else if (phase === 'locked') {
     disabled = true;
@@ -141,6 +160,11 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
     } else if (state?.current_winner) {
       label = state.current_winner;
       sub = 'took it';
+    } else if (iPressed) {
+      // Nobody ended up correct, but this player did buzz in — "MISSED" would
+      // be a flat lie to someone who pressed and got judged wrong.
+      label = 'WRONG';
+      sub = 'no one got it';
     } else {
       label = 'MISSED';
       sub = 'no presses';
@@ -177,20 +201,35 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       setReady();
       return;
     }
-    if (phase === 'open' && !hasPressed) handlePress();
+    if (phase === 'open' && !hasPressed && !myPlayer?.lockedOut) handlePress();
   };
 
   const handleButtonPointerDown = () => {
     pointerHandledRef.current = true;
+    // Fallback: if click never fires (gesture cancelled, touch-scroll
+    // interrupt, browser quirk), this flag must not stay stuck true forever
+    // and silently eat the next real press.
+    if (pointerResetTimer.current) clearTimeout(pointerResetTimer.current);
+    pointerResetTimer.current = setTimeout(() => {
+      pointerHandledRef.current = false;
+    }, 500);
     onBigButton();
   };
   const handleButtonClick = () => {
     if (pointerHandledRef.current) {
       pointerHandledRef.current = false;
+      if (pointerResetTimer.current) clearTimeout(pointerResetTimer.current);
       return;
     }
     onBigButton();
   };
+
+  // onBigButton closes over phase/connected/hasPressed/etc., which change on
+  // every state refresh — routing the call through a ref (rather than
+  // listing onBigButton in the deps) keeps the listener mounted once instead
+  // of tearing down and re-adding it on every render.
+  const onBigButtonRef = useRef(onBigButton);
+  onBigButtonRef.current = onBigButton;
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -199,11 +238,11 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       const isTypingTarget = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
       if (isTypingTarget || active === buzzButtonRef.current) return;
       e.preventDefault();
-      onBigButton();
+      onBigButtonRef.current();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  });
+  }, []);
 
   return (
     <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px', gap: 'clamp(14px,2.6vh,26px)' }}>
@@ -305,18 +344,16 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
             Scoreboard
           </h2>
           <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {[...state.players]
-              .sort((a, b) => b.score - a.score)
-              .map((p) => (
-                <li
-                  key={p.name}
-                  className="card"
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderColor: p.name === myName ? 'rgba(6,182,212,0.4)' : undefined }}
-                >
-                  <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: 500 }}>{p.name}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-cyan)' }}>{p.score}</span>
-                </li>
-              ))}
+            {scoreboard.map((p) => (
+              <li
+                key={p.name}
+                className="card"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderColor: p.name === myName ? 'rgba(6,182,212,0.4)' : undefined }}
+              >
+                <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: 500 }}>{p.name}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-cyan)' }}>{p.score}</span>
+              </li>
+            ))}
           </ol>
         </div>
       )}

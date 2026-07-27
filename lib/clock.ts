@@ -1,8 +1,8 @@
 import { supabaseBrowser } from './supabaseBrowser';
 import { pickBestSample, ClockSample } from './clockSync';
 
-const SYNC_SAMPLES = 5;
-const RESYNC_INTERVAL_MS = 20000;
+const SYNC_SAMPLES = 3;
+const RESYNC_INTERVAL_MS = 60000;
 
 let offsetMs = 0;
 let lastRttMs = 0;
@@ -43,7 +43,11 @@ export function getLastRttMs(): number {
 
 export function startClockSync(): () => void {
   void syncClock();
-  resyncTimer = setInterval(() => void syncClock(), RESYNC_INTERVAL_MS);
+  // Backgrounded tabs don't need a fresh offset — skip the RPC burst until
+  // the tab is foregrounded again; that's the only time it's actually used.
+  resyncTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') void syncClock();
+  }, RESYNC_INTERVAL_MS);
   return () => {
     if (resyncTimer) clearInterval(resyncTimer);
     resyncTimer = null;

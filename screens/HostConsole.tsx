@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { RoomApi } from '@/lib/useRoom';
 import { RoomSettings, StealMode, TeamPin } from '@/lib/types';
@@ -26,6 +26,26 @@ export function HostConsole({ room }: { room: RoomApi }) {
   const [copied, setCopied] = useState(false);
   const [displayCopied, setDisplayCopied] = useState(false);
   const [displayQrDataUrl, setDisplayQrDataUrl] = useState('');
+  const [judging, setJudging] = useState(false);
+  const [pinsRevealed, setPinsRevealed] = useState(false);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+
+  // A judge click starts an RPC round-trip; a second click before it resolves
+  // must not fire again — in steal mode the round has already moved on to
+  // the next stealer by the time the first verdict lands, so a double-click
+  // would penalize two different players for one decision.
+  const handleJudge = useCallback(
+    async (verdict: Parameters<typeof judge>[0]) => {
+      if (judging) return;
+      setJudging(true);
+      try {
+        await judge(verdict);
+      } finally {
+        setJudging(false);
+      }
+    },
+    [judge, judging]
+  );
 
   const displayUrl = code ? `${globalThis.location.origin}/?room=${code}&display` : '';
 
@@ -55,6 +75,20 @@ export function HostConsole({ room }: { room: RoomApi }) {
     downloadBlob(JSON.stringify(hostDetail.roundHistory, null, 2), `qurious-${code}-${stamp}.json`, 'application/json');
   }, [hostDetail, code]);
 
+  // Hooks must run unconditionally, so these are computed before the
+  // !state early return below rather than after it.
+  const currentPresses = hostDetail?.presses ?? [];
+  const activeSorted = useMemo(
+    () => [...currentPresses].filter((p) => !p.falseStart).sort((a, b) => a.elapsedMs - b.elapsedMs),
+    [currentPresses]
+  );
+  const falseStarts = useMemo(() => currentPresses.filter((p) => p.falseStart), [currentPresses]);
+  const scoreboard = useMemo(() => (state ? [...state.players].sort((a, b) => b.score - a.score) : []), [state]);
+  // The press belonging to the player currently up for judgment — not
+  // necessarily activeSorted[0], which stays pinned to the original fastest
+  // presser through a whole steal chain even as current_winner moves on.
+  const currentWinnerPress = state ? activeSorted.find((p) => p.playerName === state.current_winner) : undefined;
+
   if (!state) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
@@ -66,10 +100,6 @@ export function HostConsole({ room }: { room: RoomApi }) {
   const phase = state.phase;
   const readyCount = state.players.filter((p) => p.ready).length;
   const canStart = !state.settings.requireReadyCheck || readyCount >= Math.min(2, state.players.length || 2);
-  const currentPresses = hostDetail?.presses ?? [];
-  const activeSorted = [...currentPresses].filter((p) => !p.falseStart).sort((a, b) => a.elapsedMs - b.elapsedMs);
-  const falseStarts = currentPresses.filter((p) => p.falseStart);
-  const scoreboard = [...state.players].sort((a, b) => b.score - a.score);
 
   return (
     <div style={{ minHeight: '100vh', padding: '24px 16px', maxWidth: 900, margin: '0 auto' }}>
@@ -83,7 +113,18 @@ export function HostConsole({ room }: { room: RoomApi }) {
           <button className="btn btn-outline" onClick={copyRoomLink}>{copied ? '✓ Copied' : 'Copy link'}</button>
           <button className="btn btn-outline" onClick={() => setShowSettings(true)} disabled={phase !== 'idle'}>Settings</button>
           <button className="btn btn-outline" onClick={() => setShowTeams(true)} disabled={phase !== 'idle'}>Teams</button>
-          <button className="btn btn-outline" onClick={leaveRoom}>End Session</button>
+          {confirmingEnd ? (
+            <>
+              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-berry)' }}>End for good?</span>
+              <button className="btn" style={{ background: 'var(--color-berry)', color: '#fff' }} onClick={leaveRoom}>Confirm</button>
+              <button className="btn btn-outline" onClick={() => setConfirmingEnd(false)}>Cancel</button>
+            </>
+          ) : (
+            // The room survives on the server, but the host secret is only in
+            // this browser's session — losing it here means no way back into
+            // this console, so a stray click shouldn't be able to do that.
+            <button className="btn btn-outline" onClick={() => setConfirmingEnd(true)}>End Session</button>
+          )}
         </div>
       </header>
 
@@ -104,13 +145,21 @@ export function HostConsole({ room }: { room: RoomApi }) {
             <span style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.22em', color: 'var(--text-muted)' }}>
               Team codes
             </span>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-disabled)' }}>Room {code} + team code to log in</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-disabled)' }}>Room {code} + team code to log in</span>
+              {/* PINs hidden by default — this screen is often visible to the
+                  audience (projector, shared view), and a visible PIN lets
+                  anyone log in as that team. */}
+              <button className="btn btn-outline btn-sm" onClick={() => setPinsRevealed((v) => !v)}>
+                {pinsRevealed ? 'Hide' : 'Reveal'}
+              </button>
+            </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>
             {hostDetail.teams.map((t) => (
               <div key={t.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-elevated)', borderRadius: 8, padding: '8px 12px' }}>
                 <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', letterSpacing: '0.1em', color: 'var(--color-cyan)' }}>{t.pin}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', letterSpacing: '0.1em', color: 'var(--color-cyan)' }}>{pinsRevealed ? t.pin : '••••'}</span>
               </div>
             ))}
           </div>
@@ -165,19 +214,19 @@ export function HostConsole({ room }: { room: RoomApi }) {
               <p style={{ fontSize: 'var(--text-6xl)', fontFamily: 'var(--font-display)', fontWeight: 700, backgroundImage: 'var(--gradient-text-aurora)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent', margin: 0 }}>
                 {state.current_winner ?? '—'}
               </p>
-              {activeSorted[0] && (
+              {currentWinnerPress && (
                 <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginTop: 4 }}>
-                  {activeSorted[0].elapsedMs}ms · {activeSorted[0].timeSource}
+                  {currentWinnerPress.elapsedMs}ms · {currentWinnerPress.timeSource}
                 </p>
               )}
             </div>
             {!state.locking_in && (
               <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
-                <button className="btn" style={{ background: 'var(--color-cyan)', color: '#04140d' }} onClick={() => void judge('correct')}>Correct</button>
-                <button className="btn" style={{ background: 'var(--color-berry)', color: '#fff' }} onClick={() => void judge('wrong')}>
+                <button className="btn" style={{ background: 'var(--color-cyan)', color: '#04140d' }} disabled={judging} onClick={() => void handleJudge('correct')}>Correct</button>
+                <button className="btn" style={{ background: 'var(--color-berry)', color: '#fff' }} disabled={judging} onClick={() => void handleJudge('wrong')}>
                   Wrong{state.settings.stealMode !== 'off' ? ' (steal)' : ''}
                 </button>
-                <button className="btn btn-secondary" onClick={() => void judge('no_answer')}>No Answer</button>
+                <button className="btn btn-secondary" disabled={judging} onClick={() => void handleJudge('no_answer')}>No Answer</button>
               </div>
             )}
             {activeSorted.length > 1 && (

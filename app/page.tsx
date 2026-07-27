@@ -114,9 +114,13 @@ export default function Home() {
       setTeamLoginCode(code);
       return;
     }
-    // 'open' or unknown (room not found) — join_room surfaces its own error.
+    if (mode === 'error') {
+      room.showError('Could not reach the server — check your connection and try again');
+      return;
+    }
+    // 'open' or 'not_found' — join_room surfaces its own "room not found" error.
     joinRoomRef.current(code);
-  }, []);
+  }, [room.showError]);
 
   useEffect(() => {
     if (!ready || attemptedAutoJoin.current || !roomParam) return;
@@ -136,6 +140,14 @@ export default function Home() {
       void attemptJoin(code);
     }
   }, [ready, roomParam, isDisplayRoute, attemptJoin]);
+
+  // A stored session that failed to restore (room gone, secret stale) would
+  // otherwise strand the user on the Lobby with no path back in — retry as a
+  // fresh join for the same code instead of requiring a manual re-entry.
+  useEffect(() => {
+    if (!room.staleSessionCode) return;
+    void attemptJoin(room.staleSessionCode);
+  }, [room.staleSessionCode, attemptJoin]);
 
   const createRoom = useCallback(() => void room.createRoom(), [room]);
 
