@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RoomApi } from '@/lib/useRoom';
 import { msToSeconds } from '@/lib/time';
+import { hasPressedInEpoch } from '@/lib/presses';
 import { Buzzer } from '@/components/Buzzer';
 
 function useBuzzerSound() {
@@ -64,10 +65,7 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
   const pointerResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const phase = state?.phase ?? 'idle';
-  // Scoped to the current lock_epoch — a "reopen-remaining" steal bumps the
-  // epoch to open a fresh buzz window, and a press from a prior epoch must
-  // not keep blocking the player from buzzing in again.
-  const hasPressed = state?.presses.some((p) => p.playerName === myName && p.lockEpoch === state.lock_epoch) ?? false;
+  const hasPressed = state ? hasPressedInEpoch(state.presses, myName, state.lock_epoch) : false;
   const isMyTurn = state?.current_winner === myName;
   const iPressed = state?.presses.some((p) => p.playerName === myName && !p.falseStart) ?? false;
   const scoreboard = useMemo(() => (state ? [...state.players].sort((a, b) => b.score - a.score) : []), [state]);
