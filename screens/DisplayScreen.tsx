@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
 import { RoomApi } from '@/lib/useRoom';
 import { msToSeconds } from '@/lib/time';
 import { BrandFooter } from '@/components/BrandFooter';
 
 export function DisplayScreen({ room }: { room: RoomApi }) {
-  const { code, state, countdownRemainingMs } = room;
+  const { code, state, stateLoaded, countdownRemainingMs, connected } = room;
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
   useEffect(() => {
@@ -19,11 +19,32 @@ export function DisplayScreen({ room }: { room: RoomApi }) {
   }, [code]);
 
   const phase = state?.phase ?? 'idle';
-  const activePresses = [...(state?.presses ?? [])].filter((p) => !p.falseStart).sort((a, b) => a.elapsedMs - b.elapsedMs);
-  const scoreboard = [...(state?.players ?? [])].sort((a, b) => b.score - a.score);
+  const activePresses = useMemo(
+    () => [...(state?.presses ?? [])].filter((p) => !p.falseStart).sort((a, b) => a.elapsedMs - b.elapsedMs),
+    [state?.presses]
+  );
+  const displayFalseStarts = useMemo(() => (state?.presses ?? []).filter((p) => p.falseStart), [state?.presses]);
+  const scoreboard = useMemo(() => [...(state?.players ?? [])].sort((a, b) => b.score - a.score), [state?.players]);
+
+  // A fetch that came back with no room is a dead code, not an empty room —
+  // conflating the two left this screen stuck on "Waiting for players to
+  // join…" forever for a typo'd or stale room code.
+  if (code && stateLoaded && !state) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 32px', textAlign: 'center' }}>
+        <p style={{ color: 'var(--text-secondary)', fontWeight: 600, fontSize: 'clamp(1.5rem, 4vw, 2.5rem)' }}>Room not found — check the code and try again.</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 32px', position: 'relative' }}>
+      {!connected && (
+        <div className="banner banner-warning" style={{ position: 'fixed', top: 24, left: 24, zIndex: 10 }} role="alert">
+          Connection lost — this screen may be showing stale info…
+        </div>
+      )}
+
       <div className="card" style={{ position: 'fixed', top: 24, right: 24, display: 'flex', alignItems: 'center', gap: 16 }}>
         {qrDataUrl && <img src={qrDataUrl} alt={`QR code to join room ${code}`} style={{ width: 96, height: 96, borderRadius: 8 }} />}
         <div style={{ textAlign: 'left' }}>
@@ -74,8 +95,19 @@ export function DisplayScreen({ room }: { room: RoomApi }) {
                 {state.current_winner}
               </div>
             </>
+          ) : phase === 'locked' ? (
+            // Buzzers are NOT open right now — someone already pressed and a
+            // winner just hasn't been resolved yet (the 250ms lock window,
+            // or every press this round was a false start). "BUZZ!" here
+            // would tell the audience to do the one thing they can't.
+            <p style={{ color: 'var(--text-secondary)', fontWeight: 700, fontSize: 'clamp(2rem, 6vw, 5rem)' }}>Locking in…</p>
           ) : (
             <p style={{ color: 'var(--text-secondary)', fontWeight: 700, fontSize: 'clamp(2rem, 6vw, 5rem)' }}>BUZZ!</p>
+          )}
+          {displayFalseStarts.length > 0 && (
+            <p style={{ color: 'var(--color-berry)', fontSize: 'clamp(0.9rem, 1.5vw, 1.25rem)', marginTop: 16 }}>
+              False start: {displayFalseStarts.map((p) => p.playerName).join(', ')}
+            </p>
           )}
         </div>
       )}
@@ -84,7 +116,11 @@ export function DisplayScreen({ room }: { room: RoomApi }) {
         <div style={{ textAlign: 'center', width: '100%', maxWidth: 760 }}>
           <div className="card card-bordered" style={{ display: 'inline-block', padding: '24px 40px', marginBottom: 24 }}>
             <p style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.3em', marginBottom: 8, fontSize: 'clamp(1rem, 2vw, 1.5rem)' }}>
-              {state?.last_verdict === 'correct' ? 'Correct' : 'Round Over'}
+              {state?.last_verdict === 'correct'
+                ? 'Correct'
+                : state?.last_verdict == null
+                  ? 'Round Aborted'
+                  : 'Round Over'}
             </p>
             <div
               style={{
@@ -117,14 +153,16 @@ export function DisplayScreen({ room }: { room: RoomApi }) {
                 {state?.settings.requireReadyCheck && <span style={{ marginLeft: 8, color: 'var(--color-cyan)' }}>{p.ready ? '●' : '○'}</span>}
               </span>
             ))}
-            {(state?.players.length ?? 0) === 0 && (
+            {stateLoaded && (state?.players.length ?? 0) === 0 && (
               <p style={{ color: 'var(--text-muted)', fontSize: 'clamp(1.25rem, 2.5vw, 2rem)' }}>Waiting for players to join…</p>
             )}
           </div>
         </div>
       )}
 
-      {scoreboard.length > 0 && phase !== 'countdown' && (
+      {/* Hidden during open/locked so the audience can't watch scores update
+          mid-round and read who's about to win before the round resolves. */}
+      {scoreboard.length > 0 && (phase === 'idle' || phase === 'ended') && (
         <div style={{ position: 'fixed', bottom: 24, left: 24, right: 24, display: 'flex', justifyContent: 'center' }}>
           <div className="card" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 32px', justifyContent: 'center' }}>
             {scoreboard.slice(0, 8).map((p) => (

@@ -19,6 +19,7 @@ export interface SafePress {
   elapsedMs: number;
   rank: number;
   falseStart: boolean;
+  lockEpoch: number;
 }
 
 export interface PublicPlayer {
@@ -32,6 +33,7 @@ export interface RoomState {
   code: string;
   phase: RoundPhase;
   round_number: number;
+  lock_epoch: number;
   settings: RoomSettings;
   opens_at: string | null;
   round_deadline_at: string | null;
