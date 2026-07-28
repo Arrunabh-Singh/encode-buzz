@@ -54,6 +54,7 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
   const [falseStart, setFalseStart] = useState<boolean>(false);
   const [countdownRemainingMs, setCountdownRemainingMs] = useState<number | null>(null);
   const [connected, setConnected] = useState<boolean>(false);
+  const [pingMs, setPingMs] = useState<number | null>(null);
   const [sessionReplaced, setSessionReplaced] = useState<boolean>(false);
   // Set when a stored session fails to restore (e.g. the room was cleaned up
   // or the secret is stale) — lets the lobby retry a fresh join for the same
@@ -90,6 +91,20 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
   // Clock sync runs continuously — the buzzer needs it warmed up before a
   // press ever happens, not started reactively once a round opens.
   useEffect(() => startClockSync(), []);
+
+  // Surfaces the clock sync's own measured round-trip time as a connection-
+  // health readout (the header's "live · Nms" chip) — reuses the real RTT
+  // already computed for buzz-timing accuracy instead of measuring a second,
+  // redundant one.
+  useEffect(() => {
+    const tick = () => {
+      const rtt = getLastRttMs();
+      setPingMs(Number.isFinite(rtt) && rtt > 0 ? Math.round(rtt) : null);
+    };
+    tick();
+    const i = setInterval(tick, 5000);
+    return () => clearInterval(i);
+  }, []);
 
   // Restore a host/player session after a page reload.
   useEffect(() => {
@@ -398,6 +413,7 @@ export function useRoom(opts: { isDisplay?: boolean } = {}) {
 
   return {
     connected,
+    pingMs,
     role,
     code,
     myName,

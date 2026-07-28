@@ -7,6 +7,12 @@ import { RoomSettings, StealMode, TeamPin } from '@/lib/types';
 import { buildCsv } from '@/lib/csv';
 import { msToSeconds } from '@/lib/time';
 import { BrandFooter } from '@/components/BrandFooter';
+import { RoomHeader } from '@/components/RoomHeader';
+import { Roster } from '@/components/Roster';
+import { PressBoard } from '@/components/PressBoard';
+import { Buzzer } from '@/components/Buzzer';
+
+const COUNTDOWN_PRESETS = [1, 3, 5, 7, 10];
 
 function downloadBlob(content: string, filename: string, type: string): void {
   const blob = new Blob([content], { type });
@@ -19,7 +25,7 @@ function downloadBlob(content: string, filename: string, type: string): void {
 }
 
 export function HostConsole({ room }: { room: RoomApi }) {
-  const { code, state, hostDetail, error, countdownRemainingMs, connected, startRound, judge, abortRound, nextRound, updateSettings, defineTeams, leaveRoom } = room;
+  const { code, state, hostDetail, error, countdownRemainingMs, connected, pingMs, startRound, judge, abortRound, nextRound, updateSettings, defineTeams, leaveRoom } = room;
 
   const [showSettings, setShowSettings] = useState(false);
   const [showTeams, setShowTeams] = useState(false);
@@ -83,15 +89,25 @@ export function HostConsole({ room }: { room: RoomApi }) {
     [currentPresses]
   );
   const falseStarts = useMemo(() => currentPresses.filter((p) => p.falseStart), [currentPresses]);
-  const scoreboard = useMemo(() => (state ? [...state.players].sort((a, b) => b.score - a.score) : []), [state]);
   // The press belonging to the player currently up for judgment — not
   // necessarily activeSorted[0], which stays pinned to the original fastest
   // presser through a whole steal chain even as current_winner moves on.
   const currentWinnerPress = state ? activeSorted.find((p) => p.playerName === state.current_winner) : undefined;
+  const roundHistoryRows = useMemo(
+    () =>
+      (hostDetail?.roundHistory ?? [])
+        .slice()
+        .reverse()
+        .map((h) => ({
+          label: h.winner ?? 'No winner',
+          sub: h.verdict ?? undefined,
+        })),
+    [hostDetail]
+  );
 
   if (!state) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
         <p>Setting up your room…</p>
       </div>
     );
@@ -101,201 +117,176 @@ export function HostConsole({ room }: { room: RoomApi }) {
   const readyCount = state.players.filter((p) => p.ready).length;
   const canStart = !state.settings.requireReadyCheck || readyCount >= Math.min(2, state.players.length || 2);
 
+  let kicker = 'Lobby';
+  let stageTitle = 'Ready to start';
+  let domeLabel = '···';
+  let domeSub = 'idle';
+  const domeSize = 'clamp(28px,10cqw,48px)';
+
+  if (phase === 'idle') {
+    stageTitle = state.settings.requireReadyCheck ? `${readyCount}/${state.players.length} players ready` : 'Ready check disabled';
+    domeSub = canStart ? 'ready to start' : 'waiting on players';
+  } else if (phase === 'countdown') {
+    kicker = 'Starting';
+    stageTitle = 'Counting down';
+    domeLabel = String(msToSeconds(countdownRemainingMs ?? 0));
+    domeSub = 'starting';
+  } else if (phase === 'open') {
+    kicker = 'Live';
+    stageTitle = 'Buzzers open — waiting for a press…';
+    domeLabel = 'LIVE';
+    domeSub = 'waiting for a press';
+  } else if (phase === 'locked') {
+    kicker = state.locking_in ? 'Locking in' : 'Buzzed in';
+    stageTitle = state.locking_in ? 'Locking in…' : `${state.current_winner ?? '—'} buzzed in`;
+    domeLabel = state.current_winner ?? '—';
+    domeSub = state.locking_in ? 'locking in' : 'judging…';
+  } else if (phase === 'ended') {
+    kicker = 'Round over';
+    domeLabel =
+      state.last_verdict === 'correct' ? 'CORRECT' : state.last_verdict === 'wrong' ? 'WRONG' : state.last_verdict === 'no_answer' ? 'NO ANSWER' : 'ABORTED';
+    domeSub = 'round closed';
+    stageTitle =
+      (state.last_verdict === 'correct' && `${state.current_winner} got it right`) ||
+      (state.last_verdict === 'wrong' && 'Marked wrong, no more stealers') ||
+      (state.last_verdict === 'no_answer' && 'No answer — round closed') ||
+      'Round aborted';
+  }
+
   return (
-    <div style={{ minHeight: '100vh', padding: '24px 16px', maxWidth: 900, margin: '0 auto' }}>
-      <header style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 24 }}>
-        <h1 style={{ margin: 0, fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 'var(--text-2xl)' }}>
-          <span style={{ backgroundImage: 'var(--gradient-text-spectrum)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>Qurious</span>
-          <span style={{ marginLeft: 8, fontSize: 'var(--text-sm)', fontWeight: 400, color: 'var(--text-muted)' }}>Host Console</span>
-        </h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span className="pill pill-code">{code}</span>
-          <button className="btn btn-outline" onClick={copyRoomLink}>{copied ? '✓ Copied' : 'Copy link'}</button>
-          <button className="btn btn-outline" onClick={() => setShowSettings(true)} disabled={phase !== 'idle'}>Settings</button>
-          <button className="btn btn-outline" onClick={() => setShowTeams(true)} disabled={phase !== 'idle'}>Teams</button>
-          {confirmingEnd ? (
-            <>
-              <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-berry)' }}>End for good?</span>
-              <button className="btn" style={{ background: 'var(--color-berry)', color: '#fff' }} onClick={leaveRoom}>Confirm</button>
-              <button className="btn btn-outline" onClick={() => setConfirmingEnd(false)}>Cancel</button>
-            </>
-          ) : (
-            // The room survives on the server, but the host secret is only in
-            // this browser's session — losing it here means no way back into
-            // this console, so a stray click shouldn't be able to do that.
-            <button className="btn btn-outline" onClick={() => setConfirmingEnd(true)}>End Session</button>
-          )}
-        </div>
-      </header>
+    <div className="room">
+      <RoomHeader
+        code={code}
+        isHost
+        pingMs={pingMs}
+        connected={connected}
+        copied={copied}
+        onCopyLink={copyRoomLink}
+        onOpenSettings={() => setShowSettings(true)}
+        settingsDisabled={phase !== 'idle'}
+        rightSlot={
+          <>
+            <button className="gbtn gbtn--ghost gbtn--sm" onClick={() => setShowTeams(true)} disabled={phase !== 'idle'}>Teams</button>
+            {confirmingEnd ? (
+              <>
+                <span style={{ fontSize: 13, color: 'var(--color-berry)' }}>End for good?</span>
+                <button className="gbtn gbtn--danger gbtn--sm" onClick={leaveRoom}>Confirm</button>
+                <button className="gbtn gbtn--ghost gbtn--sm" onClick={() => setConfirmingEnd(false)}>Cancel</button>
+              </>
+            ) : (
+              // The room survives on the server, but the host secret is only in
+              // this browser's session — losing it here means no way back into
+              // this console, so a stray click shouldn't be able to do that.
+              <button className="gbtn gbtn--ghost gbtn--sm gbtn--leave" onClick={() => setConfirmingEnd(true)}>End Session</button>
+            )}
+          </>
+        }
+      />
 
-      {!connected && <div className="banner banner-warning" style={{ marginBottom: 16 }} role="alert">Connection lost — reconnecting…</div>}
-
-      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-        {displayQrDataUrl && <img src={displayQrDataUrl} alt="QR code for the TV display screen" style={{ width: 64, height: 64, borderRadius: 8, flexShrink: 0 }} />}
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <p style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', margin: '0 0 4px' }}>TV / Display screen</p>
-          <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayUrl}</p>
-        </div>
-        <button className="btn btn-outline" onClick={copyDisplayLink}>{displayCopied ? '✓ Copied' : 'Copy'}</button>
-      </div>
-
-      {state.entry_mode === 'teams' && hostDetail && hostDetail.teams.length > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.22em', color: 'var(--text-muted)' }}>
-              Team codes
-            </span>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-disabled)' }}>Room {code} + team code to log in</span>
-              {/* PINs hidden by default — this screen is often visible to the
-                  audience (projector, shared view), and a visible PIN lets
-                  anyone log in as that team. */}
-              <button className="btn btn-outline btn-sm" onClick={() => setPinsRevealed((v) => !v)}>
-                {pinsRevealed ? 'Hide' : 'Reveal'}
-              </button>
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>
-            {hostDetail.teams.map((t) => (
-              <div key={t.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-elevated)', borderRadius: 8, padding: '8px 12px' }}>
-                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', letterSpacing: '0.1em', color: 'var(--color-cyan)' }}>{pinsRevealed ? t.pin : '••••'}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {error && <div className="banner banner-error" style={{ marginBottom: 16 }} role="alert">{error}</div>}
+      {!connected && <div className="banner banner-warning" role="alert">Connection lost — reconnecting…</div>}
+      {error && <div className="banner banner-error" role="alert">{error}</div>}
 
       <div role="status" aria-live="assertive" className="sr-only">
         {phase === 'locked' && !state.locking_in && `${state.current_winner} buzzed in first.`}
       </div>
 
-      <section className="card" style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', marginBottom: 12 }}>
-          Round {state.round_number || '—'}
-        </h2>
+      <div className="room-body">
+        <Roster
+          players={state.players}
+          requireReadyCheck={state.settings.requireReadyCheck}
+          phase={phase}
+        />
 
-        {phase === 'idle' && (
-          <div>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)', marginBottom: 12 }}>
-              {state.settings.requireReadyCheck ? `${readyCount}/${state.players.length} players ready` : 'Ready check disabled'}
-            </p>
-            <button className="btn btn-primary" onClick={() => void startRound()} disabled={!canStart}>Start Round</button>
+        <main className="glass room-main eb-rise">
+          <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 120, background: 'linear-gradient(180deg, rgba(255,255,255,.09), transparent)', pointerEvents: 'none' }} />
+
+          <div style={{ position: 'relative', textAlign: 'center', zIndex: 2 }}>
+            <div className="micro" style={{ fontSize: 11, letterSpacing: '.3em' }}>{kicker}</div>
+            <div style={{ marginTop: 7, fontSize: 'clamp(18px,2.7vh,26px)', fontWeight: 700, letterSpacing: '-.025em', color: '#fff' }}>{stageTitle}</div>
           </div>
-        )}
 
-        {phase === 'countdown' && (
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
-            <div style={{ fontSize: 'var(--text-8xl)', fontFamily: 'var(--font-display)', fontWeight: 700, backgroundImage: 'var(--gradient-text-dusk)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>
-              {msToSeconds(countdownRemainingMs ?? 0)}
-            </div>
-            <button className="btn btn-outline" style={{ marginTop: 16 }} onClick={() => void abortRound()}>Cancel round</button>
-          </div>
-        )}
+          <Buzzer label={domeLabel} sub={domeSub} labelSize={domeSize} disabled onPointerDown={() => {}} onClick={() => {}} />
 
-        {phase === 'open' && (
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
-            <p style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)' }}>Buzzers open — waiting for a press…</p>
-            {falseStarts.length > 0 && (
-              <p style={{ color: 'var(--color-berry)', fontSize: 'var(--text-xs)', marginTop: 8 }}>False starts: {falseStarts.map((p) => p.playerName).join(', ')}</p>
+          <div style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '10px 12px', zIndex: 2 }}>
+            {phase === 'idle' && (
+              <button className="gbtn gbtn--primary" onClick={() => void startRound()} disabled={!canStart}>Start Round</button>
             )}
-            <button className="btn btn-outline" style={{ marginTop: 16 }} onClick={() => void abortRound()}>Abort round</button>
-          </div>
-        )}
-
-        {phase === 'locked' && (
-          <div>
-            <div style={{ textAlign: 'center', marginBottom: 16 }}>
-              <p style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', margin: '0 0 4px' }}>
-                {state.locking_in ? 'Locking in…' : 'Buzzed in'}
-              </p>
-              <p style={{ fontSize: 'var(--text-6xl)', fontFamily: 'var(--font-display)', fontWeight: 700, backgroundImage: 'var(--gradient-text-aurora)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent', margin: 0 }}>
-                {state.current_winner ?? '—'}
-              </p>
-              {currentWinnerPress && (
-                <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginTop: 4 }}>
-                  {currentWinnerPress.elapsedMs}ms · {currentWinnerPress.timeSource}
-                </p>
-              )}
-            </div>
-            {!state.locking_in && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
-                <button className="btn" style={{ background: 'var(--color-cyan)', color: '#04140d' }} disabled={judging} onClick={() => void handleJudge('correct')}>Correct</button>
-                <button className="btn" style={{ background: 'var(--color-berry)', color: '#fff' }} disabled={judging} onClick={() => void handleJudge('wrong')}>
+            {phase === 'countdown' && (
+              <button className="gbtn gbtn--ghost" onClick={() => void abortRound()}>Cancel round</button>
+            )}
+            {phase === 'open' && (
+              <>
+                <button className="gbtn gbtn--ghost" onClick={() => void abortRound()}>Abort round</button>
+                {falseStarts.length > 0 && (
+                  <span style={{ fontSize: 12, color: 'var(--color-berry)' }}>False starts: {falseStarts.map((p) => p.playerName).join(', ')}</span>
+                )}
+              </>
+            )}
+            {phase === 'locked' && !state.locking_in && (
+              <>
+                <button className="gbtn gbtn--primary gbtn--sm" disabled={judging} onClick={() => void handleJudge('correct')}>Correct</button>
+                <button className="gbtn gbtn--danger gbtn--sm" disabled={judging} onClick={() => void handleJudge('wrong')}>
                   Wrong{state.settings.stealMode !== 'off' ? ' (steal)' : ''}
                 </button>
-                <button className="btn btn-secondary" disabled={judging} onClick={() => void handleJudge('no_answer')}>No Answer</button>
+                <button className="gbtn gbtn--ghost gbtn--sm" disabled={judging} onClick={() => void handleJudge('no_answer')}>No Answer</button>
+              </>
+            )}
+            {phase === 'locked' && currentWinnerPress && (
+              <span className="mono-num" style={{ fontSize: 12, color: 'rgba(255,255,255,.38)', width: '100%', textAlign: 'center' }}>
+                {currentWinnerPress.elapsedMs}ms · {currentWinnerPress.timeSource}
+              </span>
+            )}
+            {phase === 'ended' && (
+              <>
+                <button className="gbtn gbtn--primary" onClick={() => void nextRound()}>Next Round</button>
+                {state.last_points_awarded.length > 0 && (
+                  <span className="mono-num" style={{ fontSize: 12, color: 'rgba(255,255,255,.38)', width: '100%', textAlign: 'center' }}>
+                    {state.last_points_awarded.map((a) => `${a.player} ${a.delta > 0 ? '+' : ''}${a.delta}`).join(', ')}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        </main>
+
+        <PressBoard presses={currentPresses} history={roundHistoryRows} />
+      </div>
+
+      <details className="glass" style={{ padding: 18 }}>
+        <summary className="micro" style={{ cursor: 'pointer' }}>Room tools</summary>
+        <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {displayQrDataUrl && <img src={displayQrDataUrl} alt="QR code for the TV display screen" style={{ width: 64, height: 64, borderRadius: 8, flexShrink: 0 }} />}
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <p className="micro" style={{ margin: '0 0 4px' }}>TV / Display screen</p>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayUrl}</p>
+            </div>
+            <button className="gbtn gbtn--ghost gbtn--sm" onClick={copyDisplayLink}>{displayCopied ? '✓ Copied' : 'Copy'}</button>
+          </div>
+
+          {state.entry_mode === 'teams' && hostDetail && hostDetail.teams.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                <span className="micro">Team codes</span>
+                <button className="gbtn gbtn--ghost gbtn--sm" onClick={() => setPinsRevealed((v) => !v)}>{pinsRevealed ? 'Hide' : 'Reveal'}</button>
               </div>
-            )}
-            {activeSorted.length > 1 && (
-              <div style={{ marginTop: 20 }}>
-                <h3 style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', marginBottom: 8 }}>Press order</h3>
-                <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {activeSorted.map((p) => (
-                    <li key={p.playerName} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', background: 'var(--bg-elevated)', borderRadius: 8, padding: '6px 12px' }}>
-                      <span>#{p.rank} {p.playerName}</span>
-                      <span style={{ fontFamily: 'var(--font-mono)' }}>{p.elapsedMs}ms</span>
-                    </li>
-                  ))}
-                </ol>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>
+                {hostDetail.teams.map((t) => (
+                  <div key={t.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.08)', borderRadius: 10, padding: '8px 12px' }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
+                    <span className="mono-num" style={{ fontSize: 16, letterSpacing: '.1em', color: 'var(--color-cyan)' }}>{pinsRevealed ? t.pin : '••••'}</span>
+                  </div>
+                ))}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {phase === 'ended' && (
-          <div style={{ textAlign: 'center', padding: '8px 0' }}>
-            <p style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
-              {state.last_verdict === 'correct' && `${state.current_winner} got it right`}
-              {state.last_verdict === 'wrong' && 'Marked wrong, no more stealers'}
-              {state.last_verdict === 'no_answer' && 'No answer — round closed'}
-              {!state.last_verdict && 'Round aborted'}
-            </p>
-            {state.last_points_awarded.length > 0 && (
-              <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 16 }}>
-                {state.last_points_awarded.map((a) => `${a.player} ${a.delta > 0 ? '+' : ''}${a.delta}`).join(', ')}
-              </p>
-            )}
-            <button className="btn btn-primary" onClick={() => void nextRound()}>Next Round</button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <span className="micro">Results</span>
+            <button className="gbtn gbtn--ghost gbtn--sm" onClick={exportResults} disabled={!hostDetail?.roundHistory.length}>Export results</button>
           </div>
-        )}
-      </section>
-
-      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
-        <div className="card">
-          <h2 style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', marginBottom: 12 }}>
-            Roster ({state.players.length})
-          </h2>
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 256, overflowY: 'auto' }}>
-            {state.players.map((p) => (
-              <li key={p.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-sm)', background: 'var(--bg-elevated)', borderRadius: 8, padding: '6px 12px' }}>
-                <span style={{ color: 'var(--text-primary)' }}>{p.name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-cyan)' }}>{p.score}</span>
-              </li>
-            ))}
-            {state.players.length === 0 && <li style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>No players yet</li>}
-          </ul>
         </div>
-
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <h2 style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', margin: 0 }}>Scoreboard</h2>
-            <button className="btn-outline btn" onClick={exportResults} disabled={!hostDetail?.roundHistory.length}>Export results</button>
-          </div>
-          <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {scoreboard.map((p, i) => (
-              <li key={p.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', background: 'var(--bg-elevated)', borderRadius: 8, padding: '6px 12px' }}>
-                <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', width: 20 }}>#{i + 1}</span>
-                <span style={{ flex: 1, color: 'var(--text-primary)' }}>{p.name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-cyan)' }}>{p.score}</span>
-              </li>
-            ))}
-            {scoreboard.length === 0 && <li style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>No players yet</li>}
-          </ol>
-        </div>
-      </section>
+      </details>
 
       {showSettings && <SettingsModal settings={state.settings} onSave={updateSettings} onClose={() => setShowSettings(false)} />}
       {showTeams && (
@@ -305,7 +296,7 @@ export function HostConsole({ room }: { room: RoomApi }) {
           onClose={() => setShowTeams(false)}
         />
       )}
-      <BrandFooter style={{ marginTop: 'var(--space-8)' }} />
+      <BrandFooter style={{ marginTop: 4 }} />
     </div>
   );
 }
@@ -346,18 +337,49 @@ function SettingsModal({
     onClose();
   };
 
-  const labelStyle: React.CSSProperties = { display: 'block', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' };
-  const rangeStyle: React.CSSProperties = { width: '100%', marginTop: 4 };
+  const labelStyle: React.CSSProperties = { display: 'block', fontSize: 13, color: 'var(--text-secondary)' };
+  const rangeStyle: React.CSSProperties = { width: '100%', marginTop: 6 };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 16 }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Round settings" className="card" style={{ width: '100%', maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 'var(--text-lg)', fontWeight: 700 }}>Settings</h2>
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(4,4,10,.6)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 16 }}
+      onClick={onClose}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Round settings"
+        className="glass-strong shimmer-sweep eb-rise"
+        style={{ width: '100%', maxWidth: 440, padding: 28, display: 'flex', flexDirection: 'column', gap: 20 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div>
+          <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 700, letterSpacing: '-.02em' }}>Round settings</h2>
+          <p style={{ margin: 0, fontSize: 13, color: 'rgba(255,255,255,.45)' }}>Applies to every player in this room.</p>
+        </div>
 
-        <label style={labelStyle}>
-          Countdown: <span style={{ color: 'var(--color-cyan)', fontFamily: 'var(--font-mono)' }}>{countdownSeconds}s</span>
-          <input type="range" min={1} max={10} value={countdownSeconds} onChange={(e) => setCountdownSeconds(Number(e.target.value))} style={rangeStyle} />
-        </label>
+        <div>
+          <div className="micro" style={{ marginBottom: 12 }}>Countdown</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {COUNTDOWN_PRESETS.map((s) => (
+              <button
+                key={s}
+                onClick={() => setCountdownSeconds(s)}
+                className="gbtn gbtn--sm"
+                style={{
+                  flex: 1,
+                  fontFamily: 'var(--font-mono)',
+                  background: s === countdownSeconds ? 'rgba(255,255,255,.18)' : 'rgba(255,255,255,.05)',
+                  borderColor: s === countdownSeconds ? 'rgba(255,255,255,.32)' : 'rgba(255,255,255,.1)',
+                  color: s === countdownSeconds ? '#fff' : 'rgba(255,255,255,.55)',
+                }}
+              >
+                {s}s
+              </button>
+            ))}
+          </div>
+        </div>
 
         <label style={labelStyle}>
           Round timeout (0 = no limit): <span style={{ color: 'var(--color-cyan)', fontFamily: 'var(--font-mono)' }}>{roundTimeoutSeconds}s</span>
@@ -379,7 +401,8 @@ function SettingsModal({
           <select
             value={stealMode}
             onChange={(e) => setStealMode(e.target.value as StealMode)}
-            style={{ width: '100%', marginTop: 4, borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '8px 12px', color: 'var(--text-primary)' }}
+            className="ginput"
+            style={{ width: '100%', marginTop: 6, fontSize: 14, padding: '10px 12px' }}
           >
             <option value="next-fastest">Next fastest (background order)</option>
             <option value="reopen-remaining">Reopen buzzers for remaining players</option>
@@ -387,14 +410,14 @@ function SettingsModal({
           </select>
         </label>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
           <input type="checkbox" checked={requireReadyCheck} onChange={(e) => setRequireReadyCheck(e.target.checked)} />
           Require ready check before each round
         </label>
 
-        <div style={{ display: 'flex', gap: 8, paddingTop: 8 }}>
-          <button className="btn btn-outline" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" style={{ flex: 1 }} onClick={save}>Save</button>
+        <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
+          <button className="gbtn gbtn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+          <button className="gbtn gbtn--primary" style={{ flex: 1 }} onClick={save}>Save</button>
         </div>
       </div>
     </div>
@@ -436,10 +459,21 @@ function TeamsModal({
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 16 }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Define teams" className="card" style={{ width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: 'var(--text-lg)', fontWeight: 700 }}>Define teams</h2>
-        <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(4,4,10,.6)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 16 }}
+      onClick={onClose}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Define teams"
+        className="glass-strong shimmer-sweep eb-rise"
+        style={{ width: '100%', maxWidth: 440, padding: 28, display: 'flex', flexDirection: 'column', gap: 14 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: '-.02em' }}>Define teams</h2>
+        <p style={{ margin: 0, fontSize: 13, color: 'rgba(255,255,255,.45)' }}>
           One team name per line. Each gets a random 4-digit code to log in with — only these teams can join.
           {existing.length > 0 && ' Saving replaces the current team list and resets everyone’s scores.'}
         </p>
@@ -450,15 +484,13 @@ function TeamsModal({
           onChange={(e) => setText(e.target.value)}
           rows={8}
           placeholder={'Team Alpha\nTeam Bravo\nTeam Charlie'}
-          style={{
-            width: '100%', borderRadius: 'var(--radius-md)', background: 'var(--bg-surface)', border: '1px solid var(--border-default)',
-            padding: '12px 14px', color: 'var(--text-primary)', fontSize: 'var(--text-sm)', resize: 'vertical', fontFamily: 'inherit',
-          }}
+          className="ginput"
+          style={{ width: '100%', fontSize: 14, resize: 'vertical', fontFamily: 'inherit' }}
         />
-        <p style={{ margin: 0, fontSize: 'var(--text-xs)', color: 'var(--text-disabled)' }}>{names.length} team{names.length === 1 ? '' : 's'}</p>
-        <div style={{ display: 'flex', gap: 8, paddingTop: 8 }}>
-          <button className="btn btn-outline" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" style={{ flex: 1 }} disabled={names.length === 0} onClick={save}>Save</button>
+        <p style={{ margin: 0, fontSize: 11, color: 'rgba(255,255,255,.32)' }}>{names.length} team{names.length === 1 ? '' : 's'}</p>
+        <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
+          <button className="gbtn gbtn--ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+          <button className="gbtn gbtn--primary" style={{ flex: 1 }} disabled={names.length === 0} onClick={save}>Save</button>
         </div>
       </div>
     </div>

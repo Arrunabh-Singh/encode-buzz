@@ -5,6 +5,10 @@ import { RoomApi } from '@/lib/useRoom';
 import { msToSeconds } from '@/lib/time';
 import { hasPressedInEpoch } from '@/lib/presses';
 import { Buzzer } from '@/components/Buzzer';
+import { RoomHeader } from '@/components/RoomHeader';
+import { Roster } from '@/components/Roster';
+import { PressBoard } from '@/components/PressBoard';
+import { Toast } from '@/components/Toast';
 
 function useBuzzerSound() {
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -52,7 +56,7 @@ function useBuzzerSound() {
 }
 
 export function PlayerScreen({ room }: { room: RoomApi }) {
-  const { code, myName, myPlayer, state, error, falseStart, countdownRemainingMs, connected, changeName, setReady, press, leaveRoom } = room;
+  const { code, myName, myPlayer, state, error, falseStart, countdownRemainingMs, connected, pingMs, changeName, setReady, press, leaveRoom } = room;
 
   const [editingName, setEditingName] = useState(false);
   const [tempName, setTempName] = useState(myName);
@@ -69,6 +73,10 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
   const isMyTurn = state?.current_winner === myName;
   const iPressed = state?.presses.some((p) => p.playerName === myName && !p.falseStart) ?? false;
   const scoreboard = useMemo(() => (state ? [...state.players].sort((a, b) => b.score - a.score) : []), [state]);
+  const winningPress = useMemo(
+    () => state?.presses.find((p) => p.playerName === state.current_winner && !p.falseStart),
+    [state]
+  );
 
   useEffect(() => {
     if (countdownRemainingMs === null) {
@@ -117,18 +125,25 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
   let sub = 'tap to buzz';
   let labelSize = 'clamp(32px,12cqw,56px)';
   let disabled = false;
+  let kicker = 'Lobby';
+  let stageTitle = 'Waiting for host';
 
   if (phase === 'countdown') {
     label = String(msToSeconds(countdownRemainingMs ?? 0));
     sub = 'hands off';
     labelSize = 'clamp(64px,26cqw,124px)';
     disabled = true;
+    kicker = 'Starting';
+    stageTitle = 'Get ready…';
   } else if (phase === 'open') {
+    kicker = 'Live';
+    stageTitle = 'Buzzers are open';
     if (hasPressed) {
       label = 'IN';
       sub = 'buzzed';
       labelSize = 'clamp(30px,12cqw,54px)';
       disabled = true;
+      stageTitle = 'You buzzed in';
     } else if (myPlayer?.lockedOut) {
       // False-started or judged 'wrong' in a reopen-remaining chain — the
       // server silently ignores a press from this player, so an enabled
@@ -137,6 +152,7 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       sub = 'locked out this round';
       labelSize = 'clamp(28px,11cqw,50px)';
       disabled = true;
+      stageTitle = 'Locked out this round';
     }
   } else if (phase === 'locked') {
     disabled = true;
@@ -144,30 +160,41 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
     if (state?.locking_in) {
       label = '···';
       sub = 'locking in';
+      kicker = 'Locking in';
+      stageTitle = 'Just a moment…';
     } else if (isMyTurn) {
       label = 'IN';
       sub = 'judging…';
+      kicker = 'Buzzed in';
+      stageTitle = 'Your turn to answer';
     } else {
       label = state?.current_winner ?? '—';
       sub = 'buzzed in';
+      kicker = 'Buzzed in';
+      stageTitle = `${state?.current_winner ?? '—'} buzzed in`;
     }
   } else if (phase === 'ended') {
     disabled = true;
     labelSize = 'clamp(28px,11cqw,52px)';
+    kicker = 'Round over';
     if (state?.last_verdict === 'correct' && state.current_winner === myName) {
       label = 'FIRST';
       sub = 'correct';
+      stageTitle = 'You got it!';
     } else if (state?.current_winner) {
       label = state.current_winner;
       sub = 'took it';
+      stageTitle = `${state.current_winner} took it`;
     } else if (iPressed) {
       // Nobody ended up correct, but this player did buzz in — "MISSED" would
       // be a flat lie to someone who pressed and got judged wrong.
       label = 'WRONG';
       sub = 'no one got it';
+      stageTitle = 'No one got it';
     } else {
       label = 'MISSED';
       sub = 'no presses';
+      stageTitle = 'Round closed';
     }
   } else {
     // idle
@@ -177,14 +204,17 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
         label = 'ARMED';
         sub = 'waiting for host';
         disabled = true;
+        stageTitle = 'Waiting for the host to start';
       } else {
         label = 'READY';
         sub = 'tap to arm';
+        stageTitle = 'Tap ready when you are set';
       }
     } else {
       label = 'WAITING';
       sub = 'host controls the round';
       disabled = true;
+      stageTitle = 'Host controls the round';
     }
   }
 
@@ -245,58 +275,15 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
   }, []);
 
   return (
-    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 16px', gap: 'clamp(14px,2.6vh,26px)' }}>
-      <h1
-        style={{
-          fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 'var(--text-2xl)', letterSpacing: '-.035em',
-          backgroundImage: 'var(--gradient-text-spectrum)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
-          margin: 0,
-        }}
-      >
-        Qurious
-      </h1>
-
-      <div className="pill" style={{ gap: 8 }}>
-        <span className="pill pill-code">{code}</span>
-        <button className="btn btn-outline" onClick={copyRoomLink}>{copied ? '✓ Copied' : 'Copy link'}</button>
-        <button className="btn btn-outline" onClick={leaveRoom}>Leave</button>
-      </div>
-
-      <div aria-live="polite">
-        {editingName ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label htmlFor="player-name" className="sr-only">Your name</label>
-            <input
-              id="player-name"
-              autoFocus
-              value={tempName}
-              onChange={(e) => setTempName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') saveName();
-                if (e.key === 'Escape') setEditingName(false);
-              }}
-              style={{ borderRadius: 8, background: 'var(--bg-surface)', border: '1px solid var(--border-default)', padding: '6px 12px', color: 'var(--text-primary)' }}
-            />
-            <button className="btn btn-primary btn-sm" onClick={saveName}>Save</button>
-            <button className="btn btn-outline" onClick={() => setEditingName(false)}>Cancel</button>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)', margin: 0 }}>
-              Playing as <strong style={{ color: 'var(--text-primary)' }}>{myName}</strong>
-            </p>
-            <button
-              className="btn btn-outline"
-              onClick={() => {
-                setTempName(myName);
-                setEditingName(true);
-              }}
-            >
-              Rename
-            </button>
-          </div>
-        )}
-      </div>
+    <div className="room">
+      <RoomHeader
+        code={code}
+        pingMs={pingMs}
+        connected={connected}
+        copied={copied}
+        onCopyLink={copyRoomLink}
+        rightSlot={<button className="gbtn gbtn--ghost gbtn--sm gbtn--leave" onClick={leaveRoom}>Leave</button>}
+      />
 
       <div role="status" aria-live="polite" className="sr-only">
         {falseStart && 'False start — you are locked out this round.'}
@@ -309,54 +296,111 @@ export function PlayerScreen({ room }: { room: RoomApi }) {
       {error && <div className="banner banner-error" role="alert">{error}</div>}
       {falseStart && <div className="banner banner-false-start anim-shake" role="alert">FALSE START — locked out this round</div>}
 
-      <Buzzer
-        buttonRef={buzzButtonRef}
-        label={label}
-        sub={sub}
-        labelSize={labelSize}
-        disabled={disabled}
-        onPointerDown={handleButtonPointerDown}
-        onClick={handleButtonClick}
-      />
+      <div className="room-body">
+        <Roster
+          players={state?.players ?? []}
+          myName={myName}
+          requireReadyCheck={state?.settings.requireReadyCheck}
+          phase={phase}
+          footer={
+            <div style={{ padding: 14, borderRadius: 16, background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.1)' }}>
+              <div className="micro" style={{ marginBottom: 9 }}>You</div>
+              {editingName ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <label htmlFor="player-name" className="sr-only">Your name</label>
+                  <input
+                    id="player-name"
+                    autoFocus
+                    value={tempName}
+                    onChange={(e) => setTempName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') saveName();
+                      if (e.key === 'Escape') setEditingName(false);
+                    }}
+                    className="ginput"
+                    style={{ flex: 1, minWidth: 0, padding: '8px 12px', fontSize: 14 }}
+                  />
+                  <button className="gbtn gbtn--primary gbtn--sm" onClick={saveName}>Save</button>
+                  <button className="gbtn gbtn--ghost gbtn--sm" onClick={() => setEditingName(false)}>Cancel</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{myName}</span>
+                  <button
+                    className="gbtn gbtn--ghost gbtn--sm"
+                    onClick={() => {
+                      setTempName(myName);
+                      setEditingName(true);
+                    }}
+                  >
+                    Rename
+                  </button>
+                </div>
+              )}
+            </div>
+          }
+        />
 
-      {state && state.players.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6 }}>
-          {state.players.map((p) => (
-            <span
-              key={p.name}
-              className="badge"
-              style={{
-                color: p.name === myName ? 'var(--color-cyan)' : 'var(--text-secondary)',
-                borderColor: p.name === myName ? 'rgba(6,182,212,0.4)' : 'var(--border-default)',
-                background: p.name === myName ? 'rgba(6,182,212,0.1)' : 'rgba(255,255,255,.04)',
-              }}
-            >
-              {p.name}
-              {state.settings.requireReadyCheck && phase === 'idle' && <span aria-hidden="true">{p.ready ? '●' : '○'}</span>}
-            </span>
-          ))}
-        </div>
-      )}
+        <main className="glass room-main eb-rise">
+          <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 120, background: 'linear-gradient(180deg, rgba(255,255,255,.09), transparent)', pointerEvents: 'none' }} />
+
+          <div style={{ position: 'relative', textAlign: 'center', zIndex: 2 }}>
+            <div className="micro" style={{ fontSize: 11, letterSpacing: '.3em' }}>{kicker}</div>
+            <div style={{ marginTop: 7, fontSize: 'clamp(18px,2.7vh,26px)', fontWeight: 700, letterSpacing: '-.025em', color: '#fff' }}>{stageTitle}</div>
+          </div>
+
+          <Buzzer
+            buttonRef={buzzButtonRef}
+            label={label}
+            sub={sub}
+            labelSize={labelSize}
+            disabled={disabled}
+            onPointerDown={handleButtonPointerDown}
+            onClick={handleButtonClick}
+          />
+
+          {state && state.players.length > 0 && (
+            <div style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6, zIndex: 2 }}>
+              {state.players.map((p) => (
+                <span
+                  key={p.name}
+                  className="badge"
+                  style={{
+                    color: p.name === myName ? 'var(--color-cyan)' : 'var(--text-secondary)',
+                    borderColor: p.name === myName ? 'rgba(6,182,212,0.4)' : 'var(--border-default)',
+                    background: p.name === myName ? 'rgba(6,182,212,0.1)' : 'rgba(255,255,255,.04)',
+                  }}
+                >
+                  {p.name}
+                  {state.settings.requireReadyCheck && phase === 'idle' && <span aria-hidden="true">{p.ready ? '●' : '○'}</span>}
+                </span>
+              ))}
+            </div>
+          )}
+        </main>
+
+        <PressBoard
+          presses={state?.presses ?? []}
+          history={(state?.winners ?? []).map((name) => ({ label: name }))}
+        />
+      </div>
 
       {state && state.winners.length > 0 && (
         <div style={{ width: '100%', maxWidth: 320 }}>
-          <h2 style={{ fontSize: 'var(--text-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.2em', color: 'var(--text-muted)', marginBottom: 12 }}>
-            Scoreboard
-          </h2>
-          <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <h2 className="sr-only">Scoreboard</h2>
+          <ol className="sr-only" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {scoreboard.map((p) => (
-              <li
-                key={p.name}
-                className="card"
-                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderColor: p.name === myName ? 'rgba(6,182,212,0.4)' : undefined }}
-              >
-                <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: 500 }}>{p.name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-cyan)' }}>{p.score}</span>
-              </li>
+              <li key={p.name}>{p.name}: {p.score}</li>
             ))}
           </ol>
         </div>
       )}
+
+      <Toast
+        show={phase === 'locked' && !state?.locking_in && !!state?.current_winner}
+        name={state?.current_winner ?? ''}
+        time={winningPress ? `${winningPress.elapsedMs}ms` : undefined}
+      />
     </div>
   );
 }

@@ -12,6 +12,7 @@ export function Buzzer({
   buttonRef,
   onPointerDown,
   onClick,
+  size,
 }: {
   label: string;
   sub: string;
@@ -20,6 +21,7 @@ export function Buzzer({
   buttonRef?: RefObject<HTMLButtonElement | null>;
   onPointerDown: () => void;
   onClick: () => void;
+  size?: 'xl';
 }) {
   const [ripples, setRipples] = useState<{ id: number }[]>([]);
 
@@ -30,7 +32,7 @@ export function Buzzer({
   };
 
   return (
-    <div className="buzzer-wrap">
+    <div className={`buzzer-wrap${size === 'xl' ? ' buzzer-wrap--xl' : ''}`}>
       <div className="buzzer-halo" />
       <div className="buzzer-ring" />
       <div className="buzzer-ring buzzer-ring--delay" />

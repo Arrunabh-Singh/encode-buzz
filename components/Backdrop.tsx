@@ -19,6 +19,7 @@ export function Backdrop() {
         }}
       />
       <div
+        className="gbg-orb-c"
         style={{
           position: 'absolute', top: '30vh', left: '38vw', width: '40vw', height: '40vw', borderRadius: '50%',
           background: 'radial-gradient(circle, var(--color-magenta) 0%, transparent 60%)',
