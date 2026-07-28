@@ -406,7 +406,11 @@ button:focus-visible { outline: 2px solid var(--color-cyan); outline-offset: 2px
 .micro { font-size: 10px; font-weight: 700; letter-spacing: .22em; text-transform: uppercase; color: rgba(255,255,255,.42); }
 .mono-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
-.room { position: relative; height: 100dvh; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: clamp(12px,2.4vw,22px); }
+/* min-height, not height: the room must be free to grow past the viewport when
+   the tools drawer opens. With a fixed height the column had no slack, so the
+   flex row above got squeezed -- the dome (fixed aspect-ratio) spilled out of
+   its panel and the drawer's own content was clipped by .glass's overflow. */
+.room { position: relative; min-height: 100dvh; display: flex; flex-direction: column; gap: 14px; padding: clamp(12px,2.4vw,22px); }
 .room-body { display: flex; flex-wrap: wrap; align-items: stretch; gap: 14px; flex: 1 1 auto; min-height: 0; }
 .room-aside { flex: 1 1 236px; min-width: 0; display: flex; flex-direction: column; gap: 14px; padding: 18px; }
 .room-aside--wide { flex: 1.5 1 250px; }
@@ -416,6 +420,25 @@ button:focus-visible { outline: 2px solid var(--color-cyan); outline-offset: 2px
   gap: clamp(14px,2.6vh,26px); padding: clamp(16px,2.6vh,24px);
   background: linear-gradient(155deg, rgba(255,255,255,.075), rgba(255,255,255,.02));
 }
+
+/* The tools drawer sits below the room body and must never be compressed by
+   it, or its expanded content gets clipped by .glass's overflow: hidden. */
+.room-tools { flex: 0 0 auto; padding: 15px 18px; }
+.room-tools > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  display: flex; align-items: center; gap: 10px; min-height: 24px;
+  transition: color .2s;
+}
+.room-tools > summary::-webkit-details-marker { display: none; }
+.room-tools > summary:hover { color: rgba(255,255,255,.75); }
+.room-tools > summary::after {
+  content: ''; width: 6px; height: 6px; flex-shrink: 0; margin-left: -2px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(-45deg);
+  transition: transform .25s cubic-bezier(.2,.8,.2,1);
+}
+.room-tools[open] > summary::after { transform: translateY(-2px) rotate(45deg); }
+.room-tools-body { margin-top: 18px; display: flex; flex-direction: column; gap: 18px; }
 
 .roster-row { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 15px; transition: all .35s cubic-bezier(.2,.8,.2,1); }
 .roster-row-tile { width: 30px; height: 30px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(140deg, rgba(255,255,255,.24), rgba(255,255,255,.06)); border: 1px solid rgba(255,255,255,.16); flex-shrink: 0; }
@@ -454,5 +477,5 @@ button:focus-visible { outline: 2px solid var(--color-cyan); outline-offset: 2px
 
 @media (prefers-reduced-motion: reduce) {
   .press-row, .toast { animation: none !important; }
-  .gbtn, .roster-row { transition: none !important; }
+  .gbtn, .roster-row, .room-tools > summary::after { transition: none !important; }
 }

@@ -252,9 +252,9 @@ export function HostConsole({ room }: { room: RoomApi }) {
         <PressBoard presses={currentPresses} history={roundHistoryRows} />
       </div>
 
-      <details className="glass" style={{ padding: 18 }}>
-        <summary className="micro" style={{ cursor: 'pointer' }}>Room tools</summary>
-        <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <details className="glass room-tools">
+        <summary className="micro">Room tools</summary>
+        <div className="room-tools-body">
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             {displayQrDataUrl && <img src={displayQrDataUrl} alt="QR code for the TV display screen" style={{ width: 64, height: 64, borderRadius: 8, flexShrink: 0 }} />}
             <div style={{ minWidth: 0, flex: 1 }}>
